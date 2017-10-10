@@ -1,0 +1,7 @@
+MAILTO=casper@example.com
+MAILFROM=noreply@example.com
+# Backup daily at 03:33
+33 03 * * 1-6 root /root/ezvzdump/ezvzdump -c /root/ezvzdump/ezvzdump.conf -s daily >>/var/log/ezvzdump.log 2>&1
+33 03 * * 7 root /root/ezvzdump/ezvzdump -c /root/ezvzdump/ezvzdump.conf -s weekly >>/var/log/ezvzdump.log 2>&1
+# Backup monthly at 02:33
+33 02 1 * * root /root/ezvzdump/ezvzdump -c /root/ezvzdump/ezvzdump.conf -s monthly >>/var/log/ezvzdump.log 2>&1

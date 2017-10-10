@@ -7,7 +7,7 @@
 function yesno_step() {
   #$1 -> Question
   #$2 -> all answers
-  #$3 -> positive answers 
+  #$3 -> positive answers
   #$4 -> default option
   if [ -n "${INTERACTIVE}" ]; then
     echo -n $1 
@@ -30,17 +30,23 @@ function e {
 }
 
 function email_file() {
-  cat $1 | mail -s "`hostname` VZ backup statistics." ${MAIL_NOTIFY}
+  if [ -n "${MAIL_NOTIFY}" ]; then
+    if [ -n "${MAILFROM}" ]; then
+      env from=${MAILFROM} mail -s "`hostname` VZ backup statistics." ${MAIL_NOTIFY} < $1
+    else
+      mail -s "`hostname` VZ backup statistics." ${MAIL_NOTIFY} < $1
+    fi
+  fi
 }
 
 function log {
   if  [ -n "${2}" ] && isNumber "${2}" && [ "${2}" -ne "0" ]; then
     e "ERROR: ${1}\t Returned ${2}"
-    e "ERROR: ${1}\t Returned ${2}" >> $LOG_FILE
+    e "ERROR: ${1}\t Returned ${2}" >> ${LOG_FILE}
     return
   fi
-  e "$1" 
-  e "$1" >> $LOG_FILE
+  e "$1"
+  e "$1" >> ${LOG_FILE}
 }
 
 function die {
@@ -77,26 +83,26 @@ function inList() {
 function count_lines() {
   local ln
   ln=0
-  echo ""
   if [ -n "${2}" ] && isNumber "${2}"; then
     while read line
     do
       ln=$((ln+1));
       echo -n -e "\t\t\rProgress: $(((ln*100)/$2))%. ${1}: ${ln}."
     done
+    echo -e "${ln} ${1}. Finished."
   else
     while read line
     do
       ln=$((ln+1));
       echo -n -e "\t\t\r${ln} ${1}."
     done
+    echo -e " Finished."
   fi
-  echo -e "${ln} ${1}. Finished\t\t\t\n"
 }
 
 function check_only_instance() {
   # Check no other instance of this script is running
-  if [ -e $PID_FILE ]; then
+  if [ -e ${PID_FILE} ]; then
     pid=`cat ${PID_FILE}`
     if kill -0 ${pid} > /dev/null 2>&1; then
       echo -n ${pid}
@@ -119,13 +125,13 @@ CONFIG_FILE="./ezvzdump.conf"
 #read command line arguments
 while [ $# -gt 0 ]
 do
-    case "$1" in 
+    case "$1" in
     -c) CONFIG_FILE=$2; shift;;
     -s) BACKUP_SET=$2; shift;;
     -i) INTERACTIVE="true";;
     -*)
        echo >&2 \
-       "usage $0 [-c config_file] [-s backup_set]"
+       "usage: $0 [-c config_file] [-s backup_set] [-i]"
        exit 1;;
      *) break;;
     esac
@@ -133,43 +139,43 @@ do
 done
 
 #read configuration file
-[ ! -f ${CONFIG_FILE} ] && die "Configuration file not found. ($CONFIG_FILE)"
+[ ! -f ${CONFIG_FILE} ] && die "Configuration file not found. (${CONFIG_FILE})"
 e "reading configuration from ${CONFIG_FILE}"
 . ${CONFIG_FILE}
 
-
-# setup self running priority
-if [ "MIN_PRIORITY" = "true" ]; then
-  renice -n 19 -p $$
-  ionice -c 3 -p $$
-fi
-
 # Make sure required variables are set
-[ -d "${VZ_CONF}" ]    || die "\$VZ_CONF directory doesn't exist. ($VZ_CONF)"
-[ -d "${VZ_PRIVATE}" ] || die "\$VZ_PRIVATE directory doesn't exist. ($VZ_PRIVATE)"
-[ -d "${LOCAL_DIR}" ]  || die "\$LOCAL_DIR directory doesn't exist. ($LOCAL_DIR)"
-[ -n "${DEFAULT_BACKUP_SET}" ]  || die "\$DEFAULT_BACKUP_SET not set." 
-[ -n "${DEFAULT_ROTATION}" ]  || die "\$DEFAULT_ROTATION not set." 
-[ -n "${VEIDS_DEFAULT}" ]  || die "\$VEIDS_DEFAULT not set." 
+[ -d "${VZ_CONF}" ]    || die "\$VZ_CONF directory doesn't exist. (${VZ_CONF})"
+[ -d "${VZ_PRIVATE}" ] || die "\$VZ_PRIVATE directory doesn't exist. (${VZ_PRIVATE})"
+[ -d "${LOCAL_DIR}" ]  || die "\$LOCAL_DIR directory doesn't exist. (${LOCAL_DIR})"
+[ -n "${DEFAULT_BACKUP_SET}" ]  || die "\$DEFAULT_BACKUP_SET not set."
+[ -n "${DEFAULT_ROTATION}" ]  || die "\$DEFAULT_ROTATION not set."
 
 #setup backup_set and rotation
 [ -n "${BACKUP_SET}" ] ||  BACKUP_SET=${DEFAULT_BACKUP_SET}
 BACKUP_SET=`toUpper ${BACKUP_SET}`
 eval ROTATION=\${${BACKUP_SET}_ROTATION}
-isNumber $ROTATION || die "Invalid Rotation Value for '${BACKUP_SET}' backup set: '$ROTATION', check configuration file."; 
+[ -n "${ROTATION}" ] ||  ROTATION=${DEFAULT_ROTATION}
+isNumber ${ROTATION} || die "Invalid Rotation Value for '${BACKUP_SET}' backup set: '${ROTATION}', check configuration file."
 
-#setup log file (which will be emailed)
-LOG_FILE=`mktemp` 
+# Loop through each VEID
+eval VEIDS=\${VEIDS_${BACKUP_SET}}
+[ -n "${VEIDS}" ] || die "Undefined VEIDS_${BACKUP_SET}, check configuration file."
 
 #check there is no other backup instance running.
 e "Checking this is the only backup instance running"
 OTHER_INSTANCE=`check_only_instance` || die "Another backup is already running ${OTHER_INSTANCE}. ${?}"
 
-# Loop through each VEID
-eval VEIDS=\${VEIDS_${BACKUP_SET}}
-[ -z "${VEIDS}" ] && VEIDS=${VEIDS_DEFAULT}
+# setup self running priority
+if [ "${MIN_PRIORITY}" = "true" ]; then
+  e "Setting minimum self running priority"
+  renice +19 -p $$
+  ionice -c3 -p $$
+fi
 
-log "`hostname` - VZ backup for containers $VEIDS started."
+#setup log file (which will be emailed)
+LOG_FILE=`mktemp`
+
+log "`hostname` - VZ backup for containers ${VEIDS} started."
 
 #check if previous backup was interrupted
 #the state file is different per backup set. it is built upon STATE_DIR + BACKUP_SET
@@ -177,37 +183,40 @@ STATE_FILE="${STATE_DIR}/${BACKUP_SET}.state"
 
 log "checking for interrupted backups in ${STATE_FILE} ..."
 
-if [ -f "$STATE_FILE" ]; then
-  ALREADY_DONE=`cat "$STATE_FILE"`
+if [ -f "${STATE_FILE}" ]; then
+  ALREADY_DONE=`cat "${STATE_FILE}"`
 fi
-if [ -n "$ALREADY_DONE" ]; then
+if [ -n "${ALREADY_DONE}" ]; then
     log "Found. Backups already completed for VEIDS:"
-    echo "$ALREADY_DONE"
+    echo "${ALREADY_DONE}"
 else
   log "None Found."
 fi
-  
 
 
-for VEID in $VEIDS; do
 
-  if [ -n "$ALREADY_DONE" ]; then
-      if inList "$VEID" "$ALREADY_DONE"; then 
-        log "backup for $VEID already done in last interrupted backup"
+for VEID in ${VEIDS}; do
+
+  if [ -n "${ALREADY_DONE}" ]; then
+      if inList "${VEID}" "${ALREADY_DONE}"; then
+        log "backup for ${VEID} already done in last interrupted backup"
         continue
       fi
   fi
 
   #phase 1 backup (rsync files from vz root without suspending the container
-  VEHOSTNAME=`vzlist -o hostname $VEID -H`
+  VEHOSTNAME=`${VZLIST} -o hostname ${VEID} -H`
   echo ""
-  e "Beginning backup of VEID: $VEID";
+  e "Beginning backup of VEID: ${VEID}";
 
   # Build up the --exclude string for the rsync command
   RSYNC="${RSYNC_DEFAULT}"
-  for path in $RSYNC_EXCLUDE; do
+  for path in ${RSYNC_EXCLUDE}; do
     RSYNC+=" --exclude=${VEID}${path}"
   done;
+  if [ -n "${INTERACTIVE}" ]; then
+    RSYNC+=" -v"
+  fi
 
   e "Commencing initial ${RSYNC} ${VZ_PRIVATE}${VEID} ${LOCAL_DIR}"
   [ ! -d "${VZ_PRIVATE}${VEID}" ] && die "\$VZ_PRIVATE\$VEID directory doesn't exist. (${VZ_PRIVATE}${VEID})"
@@ -225,11 +234,11 @@ for VEID in $VEIDS; do
   # If the VE is running, suspend, re-rsync and then resume it ...
   if [ -n "$(${VZCTL} status ${VEID} | grep running)" ]; then
 
-    e "About to suspend VEID: $VEID"
+    e "About to suspend VEID: ${VEID}"
     sleep 3
     before="$(date +%s)"
-    ${VZCTL} chkpnt $VEID --suspend
-    
+    ${VZCTL} chkpnt ${VEID} --suspend
+
     if [ -n "${LVM}" -a -b "${LVM_DEVICES_PATH}/${LVM_GROUP}/${LVM_VOLUME}" ]; then
         log "using lvm snapshots"
         snapshot_device_name="ezvzdump-"`date +%Y%m%d%H%M%s`
@@ -238,11 +247,11 @@ for VEID in $VEIDS; do
         snap_return_status="$?"
         log "${snap_output}"
         log "created device ${snapshot_device_name}" ${snap_return_status}
-        ${VZCTL} chkpnt $VEID --resume
-            log "Resumed VEID: $VEID" $?
+        ${VZCTL} chkpnt ${VEID} --resume
+        log "Resumed VEID: ${VEID}" $?
         after="$(date +%s)"
         elapsed_seconds="$(expr $after - $before)"
-        log "Container ${VEID} ($VEHOSTNAME) was down $elapsed_seconds seconds during backup process." 
+        log "Container ${VEID} (${VEHOSTNAME}) was down ${elapsed_seconds} seconds during backup process." 
         if [ "${snap_return_status}" -ne "0" ]; then
             log "Failed to create snapshot from ${LVM_DEVICES_PATH}/${LVM_GROUP}/${LVM_VOLUME}" "${snap_output}"
             log "### Skipping backup for VEID: ${VEID}"
@@ -267,12 +276,12 @@ for VEID in $VEIDS; do
         ${RSYNC} ${VZ_PRIVATE}${VEID} ${LOCAL_DIR} | count_lines "Files locally transfered"
         log "rsync finished." $? 
 
-        ${VZCTL} chkpnt $VEID --resume
-        log "Resumed VEID: $VEID" $?
+        ${VZCTL} chkpnt ${VEID} --resume
+        log "Resumed VEID: ${VEID}" $?
         after="$(date +%s)"
         elapsed_seconds="$(expr $after - $before)"
 
-        log "Container ${VEID} ($VEHOSTNAME) was down $elapsed_seconds seconds during backup process." 
+        log "Container ${VEID} (${VEHOSTNAME}) was down ${elapsed_seconds} seconds during backup process." 
     fi
   else
     log  "### Skipping suspend/re-rsync/resume, as the VEID: ${VEID} is not curently running."
@@ -285,10 +294,13 @@ for VEID in $VEIDS; do
   fi
 
   e "Copying main config file: cp ${VZ_CONF}${VEID}.conf ${LOCAL_DIR}${VEID}/etc/vzdump/vps.conf"
-  [ ! -f "${VZ_CONF}${VEID}.conf" ] && die "Unable to find ${VZ_CONF}${VEID}.conf"
-  cp ${VZ_CONF}${VEID}.conf ${LOCAL_DIR}${VEID}/etc/vzdump/vps.conf
+  if [ ! -f "${VZ_CONF}${VEID}.conf" ]; then
+    log "ERROR: Unable to find ${VZ_CONF}${VEID}.conf"
+  else
+    cp ${VZ_CONF}${VEID}.conf ${LOCAL_DIR}${VEID}/etc/vzdump/vps.conf
+  fi
 
-  for ext in start stop mount umount; do
+  for ext in start stop premount mount umount postumount; do
     if [ -f "${VZ_CONF}${VEID}.${ext}" ]; then
       e "Copying other config file: cp ${VZ_CONF}${VEID}.${ext} ${LOCAL_DIR}${VEID}/etc/vzdump/vps.${ext}"
       cp ${VZ_CONF}${VEID}.${ext} ${LOCAL_DIR}${VEID}/etc/vzdump/vps.${ext}
@@ -301,52 +313,49 @@ for VEID in $VEIDS; do
     ${RSYNC} ${LOCAL_DIR}${VEID}/ ${REMOTE_USER:+$REMOTE_USER@}${REMOTE_HOST}:${REMOTE_DIR}${VEID}/ | count_lines "Files transfered"
 
     #rotate previous remote backups
-    e "rotating up to $ROTATION backups"
+    e "rotating up to ${ROTATION} backups"
     for ROT in `seq $((ROTATION-1)) -1 0`; do
-      remote_execute "${REMOTE_USER:+$REMOTE_USER@}${REMOTE_HOST}" "[ -f ${REMOTE_DIR}${VEID}.${BACKUP_SET}${ROT}.tar.gz ] && mv -f ${REMOTE_DIR}${VEID}.${ROT}.tar.gz ${REMOTE_DIR}${VEID}.${BACKUP_SET}.$((ROT+1)).tar.gz"
+      remote_execute "${REMOTE_USER:+$REMOTE_USER@}${REMOTE_HOST}" "[ -f ${REMOTE_DIR}${VEID}.${BACKUP_SET}.${ROT}.tar.gz ] && mv -f ${REMOTE_DIR}${VEID}.${BACKUP_SET}.${ROT}.tar.gz ${REMOTE_DIR}${VEID}.${BACKUP_SET}.$((ROT+1)).tar.gz"
       if [ "$?" -eq 0 ]; then
         e "rotated backup ${ROT}"
       else
         e "backup ${ROT} does not exist."
       fi
     done
-      #make gzipped tar backup
-      if [ "${CONCURRENT_JOBS}" = "true" ]; then
-    #run in background, no feedback
-        e "making remote gzipped tar in backgound, no feedback"
-        remote_execute "${REMOTE_USER:+$REMOTE_USER@}${REMOTE_HOST}" "tar czf ${REMOTE_DIR}${VEID}.${BACKUP_SET}.0.tar.gz --numeric-owner -C ${REMOTE_DIR}${VEID} ./ 2>/dev/null " &
-      else
+    #make gzipped tar backup
+    if [ "${CONCURRENT_JOBS}" = "true" ]; then
+      #run in background, no feedback
+      e "making remote gzipped tar in backgound, no feedback"
+      remote_execute "${REMOTE_USER:+$REMOTE_USER@}${REMOTE_HOST}" "tar czf ${REMOTE_DIR}${VEID}.${BACKUP_SET}.0.tar.gz --numeric-owner -C ${REMOTE_DIR}${VEID} ./ 2>/dev/null " &
+    else
       TOTAL_LINES=`find ${LOCAL_DIR}/${VEID} | wc -l`
-    e "making remote gzipped tar backup"
-    #run in foreground, percent feedback
-        remote_execute "${REMOTE_USER:+$REMOTE_USER@}${REMOTE_HOST}" "tar cvzf ${REMOTE_DIR}${VEID}.${BACKUP_SET}.0.tar.gz --numeric-owner -C ${REMOTE_DIR}${VEID} ./ 2>/dev/null" | count_lines "files archived" "${TOTAL_LINES}"
-      fi
+      e "making remote gzipped tar backup"
+      #run in foreground, percent feedback
+      remote_execute "${REMOTE_USER:+$REMOTE_USER@}${REMOTE_HOST}" "tar cvzf ${REMOTE_DIR}${VEID}.${BACKUP_SET}.0.tar.gz --numeric-owner -C ${REMOTE_DIR}${VEID} ./ 2>/dev/null" | count_lines "files archived" "${TOTAL_LINES}"
+    fi
   fi
 
   e "Done."
 
   #add current veid to state file for future resumes.
-  echo "$VEID" >> "$STATE_FILE"
+  echo "${VEID}" >> "${STATE_FILE}"
 
 done;
 
-log "`hostname` - VZ backup for containers $VEIDS complete!" 
+log "`hostname` - VZ backup for containers ${VEIDS} complete!" 
 
 #all backups finished, delete STATE_FILE for this backup set.
-rm "$STATE_FILE"
-
+rm ${STATE_FILE}
 
 # email log file
 email_file ${LOG_FILE}
 
 #print log file
-echo
-cat ${LOG_FILE}
+#echo
+#cat ${LOG_FILE}
 
 #cleanup temporary files
 rm ${LOG_FILE}
 
 #cleanup pid file
 rm ${PID_FILE}
-
-
